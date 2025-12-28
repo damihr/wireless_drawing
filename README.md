@@ -1,8 +1,8 @@
-# 🎨 Wireless Air Drawing
+# Wireless Air Drawing
 
 Draw in the air using hand gestures! Works both as a Python desktop application and as a web application on GitHub Pages.
 
-## 🌐 Web Version (GitHub Pages)
+## Web Version (GitHub Pages)
 
 **Draw online:** https://damihr.github.io/wireless_drawing/
 
@@ -21,7 +21,7 @@ The web version uses MediaPipe for JavaScript and runs entirely in your browser 
 - **C** = Clear entire canvas
 - **Q** = Quit (web version)
 
-## 💻 Python Desktop Version
+## Python Desktop Version
 
 For running locally with Python.
 
@@ -63,24 +63,14 @@ For running locally with Python.
 2. **Or use the web version:**
    - Open `index.html` in your browser
    - Or deploy to GitHub Pages (see below)
-
-## 🚀 Deploying to GitHub Pages
-
-1. **Push the repository to GitHub**
-2. **Go to repository Settings → Pages**
-3. **Select source:** Deploy from a branch
-4. **Select branch:** `main` and folder: `/ (root)`
-5. **Save**
-
-Your drawing app will be live at: `https://damihr.github.io/wireless_drawing/`
-
+   - 
 ## 📁 Files
 
 - **`air_draw.py`** - Python desktop version (OpenCV + MediaPipe)
 - **`index.html`** - Web version (MediaPipe JS + Canvas)
 - **`requirements.txt`** - Python dependencies
 
-## 🎮 Gestures
+## Gestures
 
 ### Draw Mode
 - Pinch your thumb and index finger together
@@ -96,7 +86,7 @@ Your drawing app will be live at: `https://damihr.github.io/wireless_drawing/`
 - Press **C** key to clear the entire canvas
 - Shows a confirmation message
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### Web Version
 - **Camera not working:** Make sure you allow camera access when prompted
@@ -108,7 +98,7 @@ Your drawing app will be live at: `https://damihr.github.io/wireless_drawing/`
 - **Camera not found:** Check camera permissions and try different camera index
 - **Drawing not smooth:** Ensure good lighting and stable hand position
 
-## 📝 Notes
+## Notes
 
 - The web version uses MediaPipe JavaScript SDK (runs entirely client-side)
 - The Python version uses MediaPipe Python SDK (requires installation)
