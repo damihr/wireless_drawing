@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎨 Wireless Air Drawing</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+        }
+
+        #videoElement {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+            opacity: 0.5;
+            z-index: 1;
+        }
+
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            cursor: crosshair;
+        }
+
+        #statusText {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 1.2rem;
+            z-index: 5;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+        }
+
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 0.9rem;
+            z-index: 5;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        #errorMessage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: white;
+            padding: 2rem;
+            border-radius: 10px;
+            z-index: 20;
+            display: none;
+            text-align: center;
+            max-width: 500px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <video id="videoElement" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+        <div id="statusText">Initializing camera...</div>
+        <div id="instructions">Draw=Pinch | Fist=Erase (mop) | C=Clear | Q=Quit</div>
+        <div id="errorMessage"></div>
+    </div>
+
+    <script>
+        // Game state
+        let hands = null;
+        let camera = null;
+        let video = document.getElementById('videoElement');
+        let canvas = document.getElementById('canvas');
+        let ctx = canvas.getContext('2d');
+        let statusText = document.getElementById('statusText');
+        
+        // Canvas dimensions
+        let width, height;
+        
+        // Drawing state
+        let prevPoints = {};
+        let drawingCanvas = null; // Offscreen canvas for drawing
+        
+        // Initialize canvas
+        function initCanvas() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            
+            // Create offscreen canvas for drawing
+            drawingCanvas = document.createElement('canvas');
+            drawingCanvas.width = width;
+            drawingCanvas.height = height;
+        }
+        
+        // Count extended fingers
+        function countExtendedFingers(landmarks) {
+            const tips = [4, 8, 12, 16, 20];
+            let fingers = 0;
+            for (let i = 1; i < tips.length; i++) {
+                const tip = tips[i];
+                if (landmarks[tip].y < landmarks[tip - 2].y) {
+                    fingers++;
+                }
+            }
+            return fingers;
+        }
+        
+        // Check if pinch gesture
+        function isPinchGesture(landmarks, threshold = 0.05) {
+            const thumbTip = { x: landmarks[4].x, y: landmarks[4].y };
+            const indexTip = { x: landmarks[8].x, y: landmarks[8].y };
+            
+            const dx = thumbTip.x - indexTip.x;
+            const dy = thumbTip.y - indexTip.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            return distance < threshold;
+        }
+        
+        // Get hand surface points for erasing (mop effect)
+        function getHandSurfacePoints(landmarks) {
+            const wrist = { x: landmarks[0].x * width, y: landmarks[0].y * height };
+            const indexMcp = { x: landmarks[5].x * width, y: landmarks[5].y * height };
+            const middleMcp = { x: landmarks[9].x * width, y: landmarks[9].y * height };
+            const ringMcp = { x: landmarks[13].x * width, y: landmarks[13].y * height };
+            const pinkyMcp = { x: landmarks[17].x * width, y: landmarks[17].y * height };
+            
+            const indexTip = { x: landmarks[8].x * width, y: landmarks[8].y * height };
+            const middleTip = { x: landmarks[12].x * width, y: landmarks[12].y * height };
+            const ringTip = { x: landmarks[16].x * width, y: landmarks[16].y * height };
+            const pinkyTip = { x: landmarks[20].x * width, y: landmarks[20].y * height };
+            
+            const palmCenter = { x: landmarks[9].x * width, y: landmarks[9].y * height };
+            
+            return {
+                points: [wrist, indexMcp, indexTip, middleTip, ringTip, pinkyTip, pinkyMcp, wrist],
+                palmCenter: palmCenter
+            };
+        }
+        
+        // Initialize MediaPipe Hands
+        function initMediaPipe() {
+            if (typeof Hands === 'undefined') {
+                console.error('MediaPipe Hands not loaded');
+                showError('MediaPipe library failed to load. Please check your internet connection and refresh.');
+                return false;
+            }
+            
+            try {
+                hands = new Hands({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+                    }
+                });
+                
+                hands.setOptions({
+                    maxNumHands: 2,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                hands.onResults(onResults);
+                console.log('MediaPipe initialized successfully');
+                return true;
+            } catch (err) {
+                console.error('MediaPipe init error:', err);
+                showError('Failed to initialize MediaPipe: ' + err.message);
+                return false;
+            }
+        }
+        
+        // Handle MediaPipe results
+        function onResults(results) {
+            // Clear main canvas (but keep drawing canvas)
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw the drawing canvas onto main canvas
+            if (drawingCanvas) {
+                ctx.drawImage(drawingCanvas, 0, 0);
+            }
+            
+            if (results.multiHandLandmarks) {
+                for (let handIdx = 0; handIdx < results.multiHandLandmarks.length; handIdx++) {
+                    const landmarks = results.multiHandLandmarks[handIdx];
+                    
+                    // Mirror coordinates (video is mirrored)
+                    const mirroredLandmarks = landmarks.map(lm => ({
+                        x: 1 - lm.x,
+                        y: lm.y
+                    }));
+                    
+                    const fingersUp = countExtendedFingers(mirroredLandmarks);
+                    const isPinch = isPinchGesture(mirroredLandmarks);
+                    
+                    // Draw hand landmarks
+                    drawHandLandmarks(mirroredLandmarks);
+                    
+                    // Drawing mode: Pinch
+                    if (isPinch) {
+                        const thumbTip = {
+                            x: mirroredLandmarks[4].x * width,
+                            y: mirroredLandmarks[4].y * height
+                        };
+                        const indexTip = {
+                            x: mirroredLandmarks[8].x * width,
+                            y: mirroredLandmarks[8].y * height
+                        };
+                        
+                        const drawX = (thumbTip.x + indexTip.x) / 2;
+                        const drawY = (thumbTip.y + indexTip.y) / 2;
+                        
+                        const drawCtx = drawingCanvas.getContext('2d');
+                        drawCtx.strokeStyle = '#FF0000';
+                        drawCtx.lineWidth = 5;
+                        drawCtx.lineCap = 'round';
+                        drawCtx.lineJoin = 'round';
+                        
+                        if (!prevPoints[handIdx]) {
+                            prevPoints[handIdx] = { x: drawX, y: drawY };
+                        }
+                        
+                        drawCtx.beginPath();
+                        drawCtx.moveTo(prevPoints[handIdx].x, prevPoints[handIdx].y);
+                        drawCtx.lineTo(drawX, drawY);
+                        drawCtx.stroke();
+                        
+                        prevPoints[handIdx] = { x: drawX, y: drawY };
+                        
+                        // Redraw drawing canvas
+                        ctx.drawImage(drawingCanvas, 0, 0);
+                    }
+                    // Erase mode: Fist
+                    else if (fingersUp === 0) {
+                        const { points, palmCenter } = getHandSurfacePoints(mirroredLandmarks);
+                        
+                        const drawCtx = drawingCanvas.getContext('2d');
+                        
+                        // Erase using composite operation
+                        drawCtx.globalCompositeOperation = 'destination-out';
+                        
+                        // Draw filled polygon to erase
+                        drawCtx.beginPath();
+                        drawCtx.moveTo(points[0].x, points[0].y);
+                        for (let i = 1; i < points.length; i++) {
+                            drawCtx.lineTo(points[i].x, points[i].y);
+                        }
+                        drawCtx.closePath();
+                        drawCtx.fill();
+                        
+                        // Also erase with circle at palm center
+                        drawCtx.beginPath();
+                        drawCtx.arc(palmCenter.x, palmCenter.y, 40, 0, 2 * Math.PI);
+                        drawCtx.fill();
+                        
+                        // Reset composite operation
+                        drawCtx.globalCompositeOperation = 'source-over';
+                        
+                        // Clear previous point
+                        delete prevPoints[handIdx];
+                        
+                        // Redraw drawing canvas
+                        ctx.drawImage(drawingCanvas, 0, 0);
+                    } else {
+                        // Not drawing or erasing, clear previous point
+                        delete prevPoints[handIdx];
+                    }
+                }
+            }
+        }
+        
+        // Draw hand landmarks
+        function drawHandLandmarks(landmarks) {
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 2;
+            ctx.fillStyle = '#00FF00';
+            
+            // Draw connections
+            const connections = [
+                [0, 1, 2, 3, 4],
+                [0, 5, 6, 7, 8],
+                [0, 9, 10, 11, 12],
+                [0, 13, 14, 15, 16],
+                [0, 17, 18, 19, 20],
+                [5, 9, 13, 17]
+            ];
+            
+            for (const connection of connections) {
+                ctx.beginPath();
+                for (let i = 0; i < connection.length - 1; i++) {
+                    const start = landmarks[connection[i]];
+                    const end = landmarks[connection[i + 1]];
+                    if (i === 0) {
+                        ctx.moveTo(start.x * width, start.y * height);
+                    }
+                    ctx.lineTo(end.x * width, end.y * height);
+                }
+                ctx.stroke();
+            }
+            
+            // Draw points
+            for (const landmark of landmarks) {
+                ctx.beginPath();
+                ctx.arc(landmark.x * width, landmark.y * height, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        }
+        
+        // Start camera
+        async function startCamera() {
+            try {
+                statusText.textContent = 'Requesting camera access...';
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: 'user'
+                    }
+                });
+                
+                video.srcObject = stream;
+                await video.play();
+                
+                statusText.textContent = 'Camera ready!';
+                console.log('Camera started');
+                
+                // Start MediaPipe processing
+                if (hands && typeof Camera !== 'undefined') {
+                    camera = new Camera(video, {
+                        onFrame: async () => {
+                            if (hands) {
+                                await hands.send({ image: video });
+                            }
+                        },
+                        width: 1280,
+                        height: 720
+                    });
+                    camera.start();
+                    console.log('MediaPipe camera started');
+                } else {
+                    console.error('MediaPipe or Camera not available');
+                    showError('MediaPipe not properly initialized. Please refresh.');
+                }
+            } catch (err) {
+                console.error('Camera error:', err);
+                showError('Camera access denied. Please allow camera access and refresh the page.');
+                statusText.textContent = 'Camera error - Please allow access and refresh';
+            }
+        }
+        
+        // Clear canvas
+        function clearCanvas() {
+            if (drawingCanvas) {
+                const drawCtx = drawingCanvas.getContext('2d');
+                drawCtx.clearRect(0, 0, width, height);
+            }
+            ctx.clearRect(0, 0, width, height);
+            prevPoints = {};
+            
+            // Show message
+            ctx.fillStyle = '#FFFF00';
+            ctx.font = 'bold 40px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('🧼 Canvas cleared!', width / 2, height / 2);
+            
+            setTimeout(() => {
+                ctx.clearRect(0, 0, width, height);
+                if (drawingCanvas) {
+                    ctx.drawImage(drawingCanvas, 0, 0);
+                }
+            }, 500);
+        }
+        
+        // Show error
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+        
+        // Keyboard controls
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'c' || e.key === 'C') {
+                clearCanvas();
+            } else if (e.key === 'q' || e.key === 'Q') {
+                if (camera) {
+                    camera.stop();
+                }
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+            }
+        });
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            initCanvas();
+        });
+        
+        // Load MediaPipe scripts dynamically
+        window.addEventListener('load', () => {
+            initCanvas();
+            
+            statusText.textContent = 'Loading MediaPipe...';
+            
+            const handsSources = [
+                'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js',
+                'https://unpkg.com/@mediapipe/hands@0.4.1646424915/hands.js',
+                'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js',
+                'https://unpkg.com/@mediapipe/hands@0.4/hands.js'
+            ];
+            
+            const cameraSources = [
+                'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js',
+                'https://unpkg.com/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js',
+                'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3/camera_utils.js',
+                'https://unpkg.com/@mediapipe/camera_utils@0.3/camera_utils.js'
+            ];
+            
+            let handsLoaded = false;
+            let cameraLoaded = false;
+            
+            function tryLoadHands(index) {
+                if (index >= handsSources.length) {
+                    showError('Failed to load MediaPipe Hands from all sources. Please check your internet connection.');
+                    return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = handsSources[index];
+                script.onload = () => {
+                    console.log(`MediaPipe Hands loaded from source ${index + 1}`);
+                    setTimeout(() => {
+                        if (typeof Hands !== 'undefined' || window.Hands) {
+                            handsLoaded = true;
+                            if (cameraLoaded) {
+                                initializeAfterLoad();
+                            }
+                        } else {
+                            tryLoadHands(index + 1);
+                        }
+                    }, 500);
+                };
+                script.onerror = () => {
+                    console.log(`Source ${index + 1} failed, trying next...`);
+                    tryLoadHands(index + 1);
+                };
+                document.head.appendChild(script);
+            }
+            
+            function tryLoadCamera(index) {
+                if (index >= cameraSources.length) {
+                    showError('Failed to load MediaPipe Camera from all sources.');
+                    return;
+                }
+                
+                const script = document.createElement('script');
+                script.src = cameraSources[index];
+                script.onload = () => {
+                    console.log(`MediaPipe Camera loaded from source ${index + 1}`);
+                    setTimeout(() => {
+                        if (typeof Camera !== 'undefined' || window.Camera) {
+                            cameraLoaded = true;
+                            if (handsLoaded) {
+                                initializeAfterLoad();
+                            }
+                        } else {
+                            tryLoadCamera(index + 1);
+                        }
+                    }, 500);
+                };
+                script.onerror = () => {
+                    console.log(`Camera source ${index + 1} failed, trying next...`);
+                    tryLoadCamera(index + 1);
+                };
+                document.head.appendChild(script);
+            }
+            
+            function initializeAfterLoad() {
+                statusText.textContent = 'Initializing MediaPipe...';
+                setTimeout(() => {
+                    if (initMediaPipe()) {
+                        startCamera();
+                    }
+                }, 200);
+            }
+            
+            tryLoadHands(0);
+            tryLoadCamera(0);
+        });
+    </script>
+</body>
+</html>
+
